@@ -43,6 +43,7 @@ char ssid[] = "ssid";
 char pass[] = "password";
 
 commandId cmd = cmdNONE;
+int pcStarted = 0;
 int pcConnected = 0;
 int receivedResponse = 0;
 int showPingResponse = 0;
@@ -90,11 +91,13 @@ void udpRead()
           terminal.println("[Startup] complete");
         }
         pcConnected = 1;
+        pcStarted = 1;
         if (showPingResponse) {
           showPingResponse = 0;
           terminal.println("[Received] ping response");
         }
-        Blynk.virtualWrite(V1, pcConnected);
+        Blynk.virtualWrite(V1, pcStarted);
+        Blynk.virtualWrite(V3, pcConnected);
         digitalWrite(STATUS_LED, LOW);
         break;
       case cmdMC_START:
@@ -106,9 +109,9 @@ void udpRead()
         break;
       case cmdPC_OFF:
         terminal.println("[Shutdown] complete");
-        pcConnected = 0;
         mcState = 0;
-        Blynk.virtualWrite(V1, pcConnected);
+        pcStarted = 0;
+        Blynk.virtualWrite(V1, pcStarted);
         Blynk.virtualWrite(V2, mcState);
         digitalWrite(STATUS_LED, HIGH);
         break;
@@ -116,6 +119,7 @@ void udpRead()
     terminal.flush();
   }
   timer.disable(cmdTimer);
+  timer.restartTimer(pingTimer);
   cmd = cmdNONE;
 }
    
@@ -125,9 +129,9 @@ void udpRead()
 
 BLYNK_APP_CONNECTED()
 {
-  Blynk.virtualWrite(V1, pcConnected);
+  Blynk.virtualWrite(V1, pcStarted);
   Blynk.virtualWrite(V2, mcState);
-  Blynk.virtualWrite(V3, LOW);
+  Blynk.virtualWrite(V3, pcConnected);
   Serial.println("Devkit is online");
   Serial.println(WiFi.localIP());
 }
@@ -135,12 +139,10 @@ BLYNK_APP_CONNECTED()
 BLYNK_WRITE(V1)
 {
   int val = param.asInt();
-  delay(250);
-  Blynk.virtualWrite(V1, !val);
   terminal.printf("%s computer", val ? "[Start]" : "[Shutdown]");
   terminal.println();
   terminal.flush();
-
+  pcStarted = val;
   if (val) {
     digitalWrite(PC_POWER, HIGH);
     delay(1000);
@@ -178,10 +180,11 @@ BLYNK_WRITE(V3)
   if (val) {
     cmd = cmdPING;
     showPingResponse = 1;
-    delay(250);
-    Blynk.virtualWrite(V3, !val);
     digitalWrite(STATUS_LED, HIGH);
     udpWrite();
+  } else {
+    pcConnected = 0;
+    Blynk.virtualWrite(V3, pcConnected);
   }
 }
 
@@ -197,6 +200,9 @@ BLYNK_WRITE(V4)
     cmd = cmdNONE;
     receivedResponse = 0;
     showPingResponse = 0;
+    Blynk.virtualWrite(V1, 0);
+    Blynk.virtualWrite(V2, 0);
+    Blynk.virtualWrite(V3, 0);
     ESP.restart();
   }
 }
@@ -215,6 +221,7 @@ void cmdTimerExpired()
       }
       showPingResponse = 0;
       pcConnected = 0;
+      Blynk.virtualWrite(V3, pcConnected);
       digitalWrite(STATUS_LED, LOW);
       delay(250);
       digitalWrite(STATUS_LED, HIGH);
@@ -228,19 +235,20 @@ void cmdTimerExpired()
       terminal.println();
       break;
     case cmdPC_OFF:
-      pcConnected = 1;
-      Blynk.virtualWrite(V1, pcConnected);
+      pcStarted = 1;
+      Blynk.virtualWrite(V1, pcStarted);
       terminal.println("[Failed] to shutdown computer");
       break;
   }
 
+  timer.restartTimer(pingTimer);
   terminal.flush();
   return;
 }
 
 void pingTimerExpired()
 {
-  if (!pcConnected && !timer.isEnabled(cmdTimer)) {
+  if (!timer.isEnabled(cmdTimer)) {
     cmd = cmdPING;
     udpWrite();
   }
