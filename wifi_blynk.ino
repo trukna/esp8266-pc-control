@@ -2,12 +2,11 @@
 #include <ESP8266WiFi.h>
 #include <BlynkSimpleEsp8266.h>
 #include <WiFiUdp.h>
-#include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
-#define VERSION "Version: 1.1"
+#define VERSION "Version: 1.2"
 
 // character dimensions (for aligning text)
 #define CH_WIDTH 6
@@ -373,13 +372,15 @@ void setup()
 {
   // Debug console
   Serial.begin(115200);
-  Serial.println("Initializing display");
 
   // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  // D1 - SCL
+  // D2 - SDA
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for 128x64
     Serial.println(F("SSD1306 allocation failed"));
-    for(;;); // Don't proceed, loop forever
+    terminal.println("[Failed] Display Init");
   }
+
   // Clear the buffer
   display.clearDisplay();
 
@@ -402,11 +403,10 @@ void setup()
 
 void loop()
 {
-  //Blynk.run();
+  Blynk.run();
   timer.run();
   int packetSize = udp.parsePacket();
   if (packetSize) {
     udpRead();
   }
 }
-
