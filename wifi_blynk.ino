@@ -1,6 +1,23 @@
+#include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>
 #include <BlynkSimpleEsp8266.h>
 #include <WiFiUdp.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define VERSION "Version: 1.1"
+
+// character dimensions (for aligning text)
+#define CH_WIDTH 6
+#define CH_HEIGHT 8
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+#define OLED_RESET  LED_BUILTIN // Reset pin # (or -1 if sharing Arduino reset pin)
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 /* Comment this out to disable prints and save space */
 #define BLYNK_PRINT Serial
@@ -8,16 +25,16 @@
 #define STATUS_LED  2
 
 WiFiUDP udp;
-IPAddress pcIP(192, 168, 1, 104);
+IPAddress pcIP(192, 168, 1, 108);
 unsigned int port = 25850;  // local port to listen on
 char incomingPacket[255];  // buffer for incoming packets
-char *message[] = {
+const char *message[] = {
   "{DKP}",
   "{DKMCST}",
   "{DKMCSP}",
   "{DKPCOFF}"
 };
-char *response[] = {
+const char *response[] = {
   "[PCP]",
   "[PCMCST]",
   "[PCMCSP]",
@@ -43,6 +60,7 @@ char ssid[] = "ssid";
 char pass[] = "password";
 
 commandId cmd = cmdNONE;
+int mcuConnected = 0;
 int pcStarted = 0;
 int pcConnected = 0;
 int receivedResponse = 0;
@@ -53,6 +71,51 @@ BlynkTimer timer;
 int cmdTimer;
 int pingTimer;
 WidgetTerminal terminal(V0);
+
+void updateDisplay(String str) {
+  String mcuIpStr = String("IP: " + String(mcuConnected ? WiFi.localIP().toString() : "0.0.0.0"));
+  String pcPowerStateStr = String("PC  : " + String(pcStarted ? "ON" : "OFF"));
+  String pcConnStateStr = String("N/W : " + String(pcConnected ? "OK (" : "KO (") + pcIP.toString().substring(pcIP.toString().length() - 3) + String(")"));
+  String mcStateStr = String("KODI: " + String(mcState ? "ON" : "OFF"));
+
+  display.clearDisplay();
+
+  display.setTextSize(1);      // Normal 1:1 pixel scale
+  display.setTextColor(WHITE); // Draw white text
+  display.cp437(true);         // Use full 256 char 'Code Page 437' font
+
+  display.setCursor(0, 0);
+  display.println(VERSION);
+  display.setCursor(0, CH_HEIGHT*1.5);
+  display.println(mcuIpStr.c_str());
+  display.setCursor(0, CH_HEIGHT*3.5);
+  display.println(pcPowerStateStr);
+  display.setCursor(0, CH_HEIGHT*5);
+  display.println(pcConnStateStr);
+  display.setCursor(0, CH_HEIGHT*6.5);
+  display.println(mcStateStr);
+
+  if (mcuConnected) {
+    display.fillTriangle(
+      display.width()-CH_WIDTH*2  , 0,
+      display.width()             , 0,
+      display.width()-CH_WIDTH    , CH_HEIGHT,
+      WHITE);
+  } else {
+      display.drawTriangle(
+      display.width()-CH_WIDTH*2  , 0,
+      display.width()             , 0,
+      display.width()-CH_WIDTH    , CH_HEIGHT,
+      WHITE);
+  }
+
+  if (str.length()) {
+    display.setCursor((display.width()-CH_WIDTH*(str.length()))/2, (display.height() - CH_HEIGHT)/2);     // Start at top-left corner
+    display.println((str.c_str()));
+  }
+
+  display.display();
+}
 
 void udpWrite()
 {
@@ -87,8 +150,11 @@ void udpRead()
     receivedResponse = 1;
     switch (cmd) {
       case cmdPING:
+      {
+        bool canUpdateDisplay = false;
         if (!pcConnected) {
           terminal.println("[Startup] complete");
+          canUpdateDisplay = true;
         }
         pcConnected = 1;
         pcStarted = 1;
@@ -99,13 +165,19 @@ void udpRead()
         Blynk.virtualWrite(V1, pcStarted);
         Blynk.virtualWrite(V3, pcConnected);
         digitalWrite(STATUS_LED, LOW);
+        if (canUpdateDisplay) {
+          updateDisplay("");
+          canUpdateDisplay = false;
+        }
         break;
+      }
       case cmdMC_START:
       case cmdMC_STOP:
         mcState = cmd == cmdMC_START;
         terminal.printf("%s media centre", mcState ? "[Started]" : "[Stopped]");
         terminal.println();
         Blynk.virtualWrite(V2, mcState);
+        updateDisplay("");
         break;
       case cmdPC_OFF:
         terminal.println("[Shutdown] complete");
@@ -114,6 +186,7 @@ void udpRead()
         Blynk.virtualWrite(V1, pcStarted);
         Blynk.virtualWrite(V2, mcState);
         digitalWrite(STATUS_LED, HIGH);
+        updateDisplay("");
         break;
     }
     terminal.flush();
@@ -123,9 +196,11 @@ void udpRead()
   cmd = cmdNONE;
 }
    
-/*BLYNK_CONNECTED()
+BLYNK_CONNECTED()
 {
-}*/
+  mcuConnected = 1;
+  updateDisplay("");
+}
 
 BLYNK_APP_CONNECTED()
 {
@@ -134,6 +209,50 @@ BLYNK_APP_CONNECTED()
   Blynk.virtualWrite(V3, pcConnected);
   Serial.println("Devkit is online");
   Serial.println(WiFi.localIP());
+}
+
+void clearTerminal()
+{
+  for (int i = 0; i <= 24; i++) {
+    terminal.println("");     // "clear screen" in app.
+  }
+  terminal.flush();
+}
+
+void clearPinState()
+{
+  pcConnected = 0;
+  pcStarted = 0;
+  mcState = 0;
+  cmd = cmdNONE;
+  receivedResponse = 0;
+  showPingResponse = 0;
+  Blynk.virtualWrite(V1, 0);
+  Blynk.virtualWrite(V2, 0);
+  Blynk.virtualWrite(V3, 0);
+  updateDisplay("");
+}
+
+void showHelp()
+{
+  terminal.printf("Supported commands:\n");
+  terminal.printf(" clrscr, clrpin\n");
+  terminal.flush();  
+}
+
+BLYNK_WRITE(V0)
+{
+  String val = param.asStr();
+  if (val == String("clrscr")) {
+    clearTerminal();
+  } else if (val == String("clrpin")) {
+    clearPinState();
+  } else if (val == String("help")) {
+    showHelp();
+  } else {
+    terminal.printf("Invalid command\n");
+    showHelp();
+  }
 }
 
 BLYNK_WRITE(V1)
@@ -148,6 +267,7 @@ BLYNK_WRITE(V1)
     delay(1000);
     digitalWrite(PC_POWER, LOW);
     timer.enable(pingTimer);
+    updateDisplay("");
   } else {
     cmd = cmdPC_OFF;
     udpWrite();
@@ -196,13 +316,7 @@ BLYNK_WRITE(V4)
     terminal.flush();
     delay(250);
     Blynk.virtualWrite(V4, !val);
-    pcConnected = 0;
-    cmd = cmdNONE;
-    receivedResponse = 0;
-    showPingResponse = 0;
-    Blynk.virtualWrite(V1, 0);
-    Blynk.virtualWrite(V2, 0);
-    Blynk.virtualWrite(V3, 0);
+    clearPinState();
     ESP.restart();
   }
 }
@@ -248,6 +362,7 @@ void cmdTimerExpired()
 
 void pingTimerExpired()
 {
+  Serial.println("ping");
   if (!timer.isEnabled(cmdTimer)) {
     cmd = cmdPING;
     udpWrite();
@@ -258,6 +373,17 @@ void setup()
 {
   // Debug console
   Serial.begin(115200);
+  Serial.println("Initializing display");
+
+  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for 128x64
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed, loop forever
+  }
+  // Clear the buffer
+  display.clearDisplay();
+
+  updateDisplay("");
   Blynk.begin(auth, ssid, pass);
 
   pinMode(PC_POWER, OUTPUT);
@@ -271,15 +397,12 @@ void setup()
   timer.enable(pingTimer);
   udp.begin(port);
 
-  for (int i = 0; i <= 24; i++) {
-    terminal.println("");     // "clear screen" in app.
-  }
-  terminal.flush();
+  clearTerminal();
 }
 
 void loop()
 {
-  Blynk.run();
+  //Blynk.run();
   timer.run();
   int packetSize = udp.parsePacket();
   if (packetSize) {
